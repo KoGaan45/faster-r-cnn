@@ -45,7 +45,7 @@ def parse_annotation(annotation_path, image_dir, img_size):
             ymax = float(box_.get("ybr"))
         
             # rescale bboxes
-            bbox = torch.Tensor([xmin, ymin, xmax, ymax])
+            bbox = torch.Tensor([xmin, ymin, xmax, ymax]).cuda()
             bbox[[0, 2]] = bbox[[0, 2]] * img_w/orig_w
             bbox[[1, 3]] = bbox[[1, 3]] * img_h/orig_h
         
@@ -55,7 +55,7 @@ def parse_annotation(annotation_path, image_dir, img_size):
             label = box_.get("label")
             groundtruth_classes.append(label)
 
-        gt_boxes_all.append(torch.Tensor(groundtruth_boxes))
+        gt_boxes_all.append(torch.Tensor(groundtruth_boxes).cuda())
         gt_classes_all.append(groundtruth_classes)
                 
     return gt_boxes_all, gt_classes_all, img_paths
@@ -74,13 +74,13 @@ def calc_gt_offsets(pos_anc_coords, gt_bbox_mapping):
     tw_ = torch.log(gt_w / anc_w)
     th_ = torch.log(gt_h / anc_h)
 
-    return torch.stack([tx_, ty_, tw_, th_], dim=-1)
+    return torch.stack([tx_, ty_, tw_, th_], dim=-1).cuda()
 
 def gen_anc_centers(out_size):
     out_h, out_w = out_size
     
-    anc_pts_x = torch.arange(0, out_w) + 0.5
-    anc_pts_y = torch.arange(0, out_h) + 0.5
+    anc_pts_x = torch.arange(0, out_w).cuda() + 0.5
+    anc_pts_y = torch.arange(0, out_h).cuda() + 0.5
     
     return anc_pts_x, anc_pts_y
 
@@ -111,7 +111,7 @@ def generate_proposals(anchors, offsets):
     anchors = ops.box_convert(anchors, in_fmt='xyxy', out_fmt='cxcywh')
 
     # apply offsets to anchors to create proposals
-    proposals_ = torch.zeros_like(anchors)
+    proposals_ = torch.zeros_like(anchors).cuda()
     proposals_[:,0] = anchors[:,0] + offsets[:,0]*anchors[:,2]
     proposals_[:,1] = anchors[:,1] + offsets[:,1]*anchors[:,3]
     proposals_[:,2] = anchors[:,2] * torch.exp(offsets[:,2])
@@ -125,11 +125,11 @@ def generate_proposals(anchors, offsets):
 def gen_anc_base(anc_pts_x, anc_pts_y, anc_scales, anc_ratios, out_size):
     n_anc_boxes = len(anc_scales) * len(anc_ratios)
     anc_base = torch.zeros(1, anc_pts_x.size(dim=0) \
-                              , anc_pts_y.size(dim=0), n_anc_boxes, 4) # shape - [1, Hmap, Wmap, n_anchor_boxes, 4]
+                              , anc_pts_y.size(dim=0), n_anc_boxes, 4).cuda() # shape - [1, Hmap, Wmap, n_anchor_boxes, 4]
     
     for ix, xc in enumerate(anc_pts_x):
         for jx, yc in enumerate(anc_pts_y):
-            anc_boxes = torch.zeros((n_anc_boxes, 4))
+            anc_boxes = torch.zeros((n_anc_boxes, 4)).cuda()
             c = 0
             for i, scale in enumerate(anc_scales):
                 for j, ratio in enumerate(anc_ratios):
@@ -141,7 +141,7 @@ def gen_anc_base(anc_pts_x, anc_pts_y, anc_scales, anc_ratios, out_size):
                     xmax = xc + w / 2
                     ymax = yc + h / 2
 
-                    anc_boxes[c, :] = torch.Tensor([xmin, ymin, xmax, ymax])
+                    anc_boxes[c, :] = torch.Tensor([xmin, ymin, xmax, ymax]).cuda()
                     c += 1
 
             anc_base[:, ix, jx, :] = ops.clip_boxes_to_image(anc_boxes, size=out_size)
@@ -156,7 +156,7 @@ def get_iou_mat(batch_size, anc_boxes_all, gt_bboxes_all):
     tot_anc_boxes = anc_boxes_flat.size(dim=1)
     
     # create a placeholder to compute IoUs amongst the boxes
-    ious_mat = torch.zeros((batch_size, tot_anc_boxes, gt_bboxes_all.size(dim=1)))
+    ious_mat = torch.zeros((batch_size, tot_anc_boxes, gt_bboxes_all.size(dim=1))).cuda()
 
     # compute IoU of the anc boxes with the gt boxes for all the images
     for i in range(batch_size):
@@ -262,7 +262,7 @@ def get_req_anchors(anc_boxes_all, gt_bboxes_all, gt_classes_all, pos_thresh=0.7
     negative_anc_mask = (max_iou_per_anc < neg_thresh)
     negative_anc_ind = torch.where(negative_anc_mask)[0]
     # sample -ve samples to match the +ve samples
-    negative_anc_ind = negative_anc_ind[torch.randint(0, negative_anc_ind.shape[0], (positive_anc_ind.shape[0],))]
+    negative_anc_ind = negative_anc_ind[torch.randint(0, negative_anc_ind.shape[0], (positive_anc_ind.shape[0],)).cuda()]
     negative_anc_coords = anc_boxes_flat[negative_anc_ind]
     
     return positive_anc_ind, negative_anc_ind, GT_conf_scores, GT_offsets, GT_class_pos, \
@@ -273,7 +273,7 @@ def get_req_anchors(anc_boxes_all, gt_bboxes_all, gt_classes_all, pos_thresh=0.7
 def display_img(img_data, fig, axes):
     for i, img in enumerate(img_data):
         if type(img) == torch.Tensor:
-            img = img.permute(1, 2, 0).numpy()
+            img = img.cpu().permute(1, 2, 0).numpy()
         axes[i].imshow(img)
     
     return fig, axes
@@ -287,7 +287,7 @@ def display_bbox(bboxes, fig, ax, classes=None, in_format='xyxy', color='y', lin
     bboxes = ops.box_convert(bboxes, in_fmt=in_format, out_fmt='xywh')
     c = 0
     for box in bboxes:
-        x, y, w, h = box.numpy()
+        x, y, w, h = box.cpu().numpy()
         # display bounding box
         rect = patches.Rectangle((x, y), w, h, linewidth=line_width, edgecolor=color, facecolor='none')
         ax.add_patch(rect)
@@ -302,6 +302,8 @@ def display_bbox(bboxes, fig, ax, classes=None, in_format='xyxy', color='y', lin
 
 def display_grid(x_points, y_points, fig, ax, special_point=None):
     # plot grid
+    x_points = x_points.cpu()
+    y_points = y_points.cpu()
     for x in x_points:
         for y in y_points:
             ax.scatter(x, y, color="w", marker='+')
@@ -309,6 +311,6 @@ def display_grid(x_points, y_points, fig, ax, special_point=None):
     # plot a special point we want to emphasize on the grid
     if special_point:
         x, y = special_point
-        ax.scatter(x, y, color="red", marker='+')
+        ax.scatter(x.cpu(), y.cpu(), color="red", marker='+')
         
     return fig, ax

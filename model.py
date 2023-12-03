@@ -236,8 +236,8 @@ class TwoStageDetector(nn.Module):
 # ------------------- Loss Utils ----------------------
 
 def calc_cls_loss(conf_scores_pos, conf_scores_neg, batch_size):
-    target_pos = torch.ones_like(conf_scores_pos)
-    target_neg = torch.zeros_like(conf_scores_neg)
+    target_pos = torch.ones_like(conf_scores_pos).cuda()
+    target_neg = torch.zeros_like(conf_scores_neg).cuda()
     
     target = torch.cat((target_pos, target_neg))
     inputs = torch.cat((conf_scores_pos, conf_scores_neg))
