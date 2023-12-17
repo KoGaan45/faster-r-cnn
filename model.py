@@ -157,11 +157,18 @@ class ClassificationModule(nn.Module):
         self.avg_pool = nn.AvgPool2d(self.roi_size)
         self.fc = nn.Linear(out_channels, hidden_dim)
         self.dropout = nn.Dropout(p_dropout)
+
+        # weights for loss
+        self.w_conf = 1
+        self.w_reg = 5
         
         # define classification head
         self.cls_head = nn.Linear(hidden_dim, n_classes)
+
+        # define bbox regression head
+        self.bbox_head = nn.Linear(hidden_dim, n_classes * 4)
         
-    def forward(self, feature_map, proposals_list, gt_classes=None):
+    def forward(self, feature_map, proposals_list, gt_classes=None, gt_offsets=None):
         
         if gt_classes is None:
             mode = 'eval'
@@ -181,14 +188,23 @@ class ClassificationModule(nn.Module):
         
         # get the classification scores
         cls_scores = self.cls_head(out)
+
+        # get the bbox offsets
+        bbox_offsets = self.bbox_head(out).view(-1, self.n_classes, 4)
         
         if mode == 'eval':
-            return cls_scores
+            return cls_scores, bbox_offsets
         
         # compute cross entropy loss
         cls_loss = F.cross_entropy(cls_scores, gt_classes.long())
+
+        # compute bbox regression loss
+        reg_loss = calc_bbox_reg_loss(gt_offsets, bbox_offsets, gt_classes.size(0))
+
+        # total loss
+        total_loss = self.w_conf * cls_loss + self.w_reg * reg_loss
         
-        return cls_loss
+        return total_loss, cls_scores, bbox_offsets
     
 class TwoStageDetector(nn.Module):
     def __init__(self, img_size, out_size, out_channels, n_classes, roi_size):
@@ -208,15 +224,15 @@ class TwoStageDetector(nn.Module):
             proposals_sep = proposals[proposal_idxs].detach().clone()
             pos_proposals_list.append(proposals_sep)
         
-        cls_loss = self.classifier(feature_map, pos_proposals_list, GT_class_pos)
-        total_loss = cls_loss + total_rpn_loss
+        total_cls_loss, cls_scores, bbox_offsets = self.classifier(feature_map, pos_proposals_list, GT_class_pos)
+        total_loss = total_cls_loss + total_rpn_loss
         
         return total_loss
     
     def inference(self, images, conf_thresh=0.5, nms_thresh=0.7):
         batch_size = images.size(dim=0)
         proposals_final, conf_scores_final, feature_map = self.rpn.inference(images, conf_thresh, nms_thresh)
-        cls_scores = self.classifier(feature_map, proposals_final)
+        cls_scores, bbox_offsets = self.classifier(feature_map, proposals_final)
         
         # convert scores into probability
         cls_probs = F.softmax(cls_scores, dim=-1)
