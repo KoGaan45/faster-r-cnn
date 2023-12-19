@@ -109,7 +109,7 @@ class RegionProposalNetwork(nn.Module):
         
         total_rpn_loss = self.w_conf * cls_loss + self.w_reg * reg_loss
         
-        return total_rpn_loss, feature_map, proposals, positive_anc_ind_sep, GT_class_pos
+        return total_rpn_loss, feature_map, proposals, positive_anc_ind_sep, GT_class_pos, GT_offsets
     
     def inference(self, images, conf_thresh=0.5, nms_thresh=0.7):
         with torch.no_grad():
@@ -157,6 +157,7 @@ class ClassificationModule(nn.Module):
         self.avg_pool = nn.AvgPool2d(self.roi_size)
         self.fc = nn.Linear(out_channels, hidden_dim)
         self.dropout = nn.Dropout(p_dropout)
+        self.n_classes = n_classes
 
         # weights for loss
         self.w_conf = 1
@@ -190,11 +191,12 @@ class ClassificationModule(nn.Module):
         cls_scores = self.cls_head(out)
 
         # get the bbox offsets
-        bbox_offsets = self.bbox_head(out).view(-1, self.n_classes, 4)
+        bbox_offsets = self.bbox_head(out)
+        bbox_offsets = bbox_offsets.view(-1, self.n_classes, 4)
         
         if mode == 'eval':
             return cls_scores, bbox_offsets
-        
+                
         # compute cross entropy loss
         cls_loss = F.cross_entropy(cls_scores, gt_classes.long())
 
@@ -214,7 +216,7 @@ class TwoStageDetector(nn.Module):
         
     def forward(self, images, gt_bboxes, gt_classes):
         total_rpn_loss, feature_map, proposals, \
-        positive_anc_ind_sep, GT_class_pos = self.rpn(images, gt_bboxes, gt_classes)
+        positive_anc_ind_sep, GT_class_pos, gt_offsets = self.rpn(images, gt_bboxes, gt_classes)
         
         # get separate proposals for each sample
         pos_proposals_list = []
@@ -224,7 +226,7 @@ class TwoStageDetector(nn.Module):
             proposals_sep = proposals[proposal_idxs].detach().clone()
             pos_proposals_list.append(proposals_sep)
         
-        total_cls_loss, cls_scores, bbox_offsets = self.classifier(feature_map, pos_proposals_list, GT_class_pos)
+        total_cls_loss, cls_scores, bbox_offsets = self.classifier(feature_map, pos_proposals_list, GT_class_pos, gt_offsets)
         total_loss = total_cls_loss + total_rpn_loss
         
         return total_loss
@@ -263,6 +265,8 @@ def calc_cls_loss(conf_scores_pos, conf_scores_neg, batch_size):
     return loss
 
 def calc_bbox_reg_loss(gt_offsets, reg_offsets_pos, batch_size):
+    print(f"gt_offsets size: {gt_offsets.size()}")
+    print(f"reg_offsets_pos size: {reg_offsets_pos.size()}")
     assert gt_offsets.size() == reg_offsets_pos.size()
     loss = F.smooth_l1_loss(reg_offsets_pos, gt_offsets, reduction='sum') * 1. / batch_size
     return loss
